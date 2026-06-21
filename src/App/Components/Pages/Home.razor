@@ -1,0 +1,346 @@
+@page "/"
+@implements IDisposable
+@inject NpgsqlDataSource DataSource
+@rendermode RenderMode.InteractiveServer
+
+<div class="container">
+    <header>
+        <div class="logo-section">
+            <h1>Employee Portal<span class="k8s-badge">K8s Demo</span></h1>
+            <p>Real-time analytics and load distribution across service replicas</p>
+        </div>
+        <div class="controls">
+            <label class="poll-toggle">
+                <input type="checkbox" @bind="autoPoll" /> Live Updates (2s)
+            </label>
+            <button class="btn btn-outline" @onclick="RefreshDataAsync" style="width: auto;" disabled="@isRefreshing">
+                @if (isRefreshing)
+                {
+                    <div class="spinner" style="display: block;"></div>
+                }
+                else
+                {
+                    <span>Refresh Data</span>
+                }
+            </button>
+        </div>
+    </header>
+
+    <div class="metrics-grid">
+        <div class="glass-card">
+            <div class="metric-title">Service Connection Health</div>
+            <div class="metric-value">
+                <span class="status-dot @healthClass"></span>
+                <span>@healthStatus</span>
+            </div>
+            <div class="metric-desc">@healthDesc</div>
+        </div>
+
+        <div class="glass-card">
+            <div class="metric-title">Total Records Count</div>
+            <div class="metric-value">@recordsCount</div>
+            <div class="metric-desc">Number of records returned from DB tier</div>
+        </div>
+    </div>
+
+    <div class="dashboard-layout">
+        <div class="glass-card form-card">
+            <h3>Add New Employee</h3>
+            <form @onsubmit="HandleSubmitAsync" @onsubmit:preventDefault>
+                <div class="form-group">
+                    <label for="empName">Full Name</label>
+                    <input type="text" id="empName" class="form-control" placeholder="John Doe" @bind="newName" required />
+                </div>
+
+                <div class="form-group">
+                    <label for="empRole">Role / Position</label>
+                    <input type="text" id="empRole" class="form-control" placeholder="Software Architect" @bind="newRole" required />
+                </div>
+
+                <div class="form-group">
+                    <label for="empDept">Department</label>
+                    <select id="empDept" class="form-control" @bind="newDept" required>
+                        <option value="" disabled selected>Select Department</option>
+                        <option value="Engineering">Engineering</option>
+                        <option value="Product">Product</option>
+                        <option value="Design">Design</option>
+                        <option value="Security">Security</option>
+                        <option value="HR">HR</option>
+                        <option value="Data Science">Data Science</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="empSalary">Annual Salary ($)</label>
+                    <input type="number" id="empSalary" class="form-control" placeholder="95000" min="1" @bind="newSalary" required />
+                </div>
+
+                <div class="form-group">
+                    <label for="empDate">Date Joined</label>
+                    <input type="date" id="empDate" class="form-control" @bind="newDate" required />
+                </div>
+
+                <button type="submit" class="btn" style="margin-top: 0.5rem;" disabled="@isSubmitting">
+                    @if (isSubmitting)
+                    {
+                        <div class="spinner" style="display: block;"></div>
+                    }
+                    else
+                    {
+                        <span>Add Record</span>
+                    }
+                </button>
+            </form>
+        </div>
+
+        <div class="table-card">
+            <div class="table-header">
+                <h2>Employee Master Database</h2>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Full Name</th>
+                            <th>Role / Position</th>
+                            <th>Department</th>
+                            <th>Annual Salary</th>
+                            <th>Date Joined</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (employees.Count > 0)
+                        {
+                            @foreach (var emp in employees)
+                            {
+                                <tr>
+                                    <td style="font-family: monospace; font-weight: bold; color: var(--primary);">@emp.Id</td>
+                                    <td style="font-weight: 600; color: white;">@emp.Name</td>
+                                    <td>@emp.Role</td>
+                                    <td><span class="badge-dept">@emp.Department</span></td>
+                                    <td class="salary">$@emp.Salary.ToString("N0")</td>
+                                    <td style="color: var(--text-muted);">@emp.DateJoined</td>
+                                </tr>
+                            }
+                        }
+                        else
+                        {
+                            <tr>
+                                <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 3rem;">
+                                    No records found in the database.
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="toast @toastClass" style="border-color: @toastBorderColor;">
+    <span class="@toastDotClass"></span>
+    <span>@toastMsg</span>
+</div>
+
+@code {
+    private List<Employee> employees = new();
+    private int recordsCount = 0;
+    private string healthStatus = "Checking...";
+    private string healthClass = "unhealthy";
+    private string healthDesc = "Querying database connectivity status";
+    private bool autoPoll = true;
+    private bool isSubmitting = false;
+    private bool isRefreshing = false;
+
+    private string newName = "";
+    private string newRole = "";
+    private string newDept = "";
+    private int newSalary = 95000;
+    private DateTime newDate = DateTime.Today;
+
+    private string toastMsg = "";
+    private string toastClass = "";
+    private string toastBorderColor = "var(--primary)";
+    private string toastDotClass = "status-dot healthy";
+
+    private System.Threading.Timer? timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        newDate = DateTime.Today;
+        await LoadDataAsync();
+        await CheckHealthAsync();
+        StartTimer();
+    }
+
+    private void StartTimer()
+    {
+        timer = new System.Threading.Timer(async _ =>
+        {
+            if (autoPoll)
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadDataAsync();
+                    await CheckHealthAsync();
+                    StateHasChanged();
+                });
+            }
+        }, null, 2000, 2000);
+    }
+
+    private async Task LoadDataAsync()
+    {
+        try
+        {
+            var tempEmployees = new List<Employee>();
+            using var conn = await DataSource.OpenConnectionAsync();
+            using var cmd = new NpgsqlCommand("SELECT id, name, role, department, salary, date_joined FROM employees ORDER BY id ASC;", conn);
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                tempEmployees.Add(new Employee
+                {
+                    Id = reader.GetInt32(0),
+                    Name = reader.GetString(1),
+                    Role = reader.GetString(2),
+                    Department = reader.GetString(3),
+                    Salary = reader.GetInt32(4),
+                    DateJoined = reader.GetDateTime(5).ToString("yyyy-MM-dd")
+                });
+            }
+            employees = tempEmployees;
+            recordsCount = employees.Count;
+            healthStatus = "HEALTHY";
+            healthClass = "healthy";
+            Console.WriteLine($"[BLAZOR] Successfully loaded {employees.Count} records.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[BLAZOR ERROR] Error reading records: {ex.Message}");
+            healthStatus = "ERROR";
+            healthClass = "unhealthy";
+            recordsCount = 0;
+        }
+    }
+
+    private async Task CheckHealthAsync()
+    {
+        try
+        {
+            using var conn = await DataSource.OpenConnectionAsync();
+            using var cmd = new NpgsqlCommand("SELECT 1;", conn);
+            await cmd.ExecuteScalarAsync();
+            healthStatus = "HEALTHY";
+            healthClass = "healthy";
+            healthDesc = "Database connection is active and stable";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[BLAZOR HEALTH ERROR]: {ex.Message}");
+            healthStatus = "OFFLINE";
+            healthClass = "unhealthy";
+            healthDesc = "Failed to connect to the database tier";
+        }
+    }
+
+    private async Task RefreshDataAsync()
+    {
+        isRefreshing = true;
+        await LoadDataAsync();
+        await CheckHealthAsync();
+        isRefreshing = false;
+    }
+
+    private async Task HandleSubmitAsync()
+    {
+        Console.WriteLine($"[BLAZOR] Submit button clicked. Attempting to add new employee: {newName}, Role: {newRole}, Dept: {newDept}, Salary: {newSalary}");
+        if (string.IsNullOrWhiteSpace(newName) ||
+            string.IsNullOrWhiteSpace(newRole) ||
+            string.IsNullOrWhiteSpace(newDept) ||
+            newSalary <= 0)
+        {
+            Console.WriteLine("[BLAZOR] Form validation failed. Missing name, role, department or invalid salary.");
+            ShowToast("Please fill out all fields correctly.", false);
+            return;
+        }
+
+        isSubmitting = true;
+        try
+        {
+            using var conn = await DataSource.OpenConnectionAsync();
+            using var cmd = new NpgsqlCommand(
+                "INSERT INTO employees (name, role, department, salary, date_joined) VALUES (@name, @role, @department, @salary, @date_joined) RETURNING id;",
+                conn);
+
+            cmd.Parameters.AddWithValue("name", newName);
+            cmd.Parameters.AddWithValue("role", newRole);
+            cmd.Parameters.AddWithValue("department", newDept);
+            cmd.Parameters.AddWithValue("salary", newSalary);
+            cmd.Parameters.AddWithValue("date_joined", newDate);
+
+            var newId = (int?)await cmd.ExecuteScalarAsync();
+            Console.WriteLine($"[BLAZOR] Successfully added employee record to database with generated ID: {newId}");
+
+            ShowToast("Employee added successfully!", true);
+            newName = "";
+            newRole = "";
+            newDept = "";
+            newSalary = 95000;
+            newDate = DateTime.Today;
+
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[BLAZOR ERROR] Failed to save record: {ex.Message}");
+            ShowToast("Error: " + ex.Message, false);
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private void ShowToast(string message, bool isSuccess)
+    {
+        toastMsg = message;
+        if (isSuccess)
+        {
+            toastDotClass = "status-dot healthy";
+            toastBorderColor = "var(--success)";
+        }
+        else
+        {
+            toastDotClass = "status-dot unhealthy";
+            toastBorderColor = "var(--danger)";
+        }
+        toastClass = "show";
+
+        Task.Delay(2500).ContinueWith(_ =>
+        {
+            InvokeAsync(() =>
+            {
+                toastClass = "";
+                StateHasChanged();
+            });
+        });
+    }
+
+    public void Dispose()
+    {
+        timer?.Dispose();
+    }
+
+    private class Employee
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string Role { get; set; } = "";
+        public string Department { get; set; } = "";
+        public int Salary { get; set; }
+        public string DateJoined { get; set; } = "";
+    }
+}

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: nagp-k8s-demo
+  name: app-configmap
+  labels:
+    app: employee-app
+data:
+  DB_HOST: "db-service"
+  DB_PORT: "5432"
+  DB_NAME: "employee_db"
+  DB_USER: "db_admin"

@@ -1,0 +1,42 @@
+name: Deploy Database to AKS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'k8s/db/**'
+
+jobs:
+  deploy-db:
+    name: Deploy PostgreSQL to AKS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS Context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          cluster-name: ${{ secrets.AZURE_CLUSTER_NAME }}
+
+      - name: Create namespace, configmap and secret
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/secret.yaml 
+
+      - name: Deploy Database
+        run: |
+          kubectl apply -f k8s/db/ 
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status statefulset/db -n nagp-k8s-demo
